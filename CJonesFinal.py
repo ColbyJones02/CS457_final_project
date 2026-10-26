@@ -39,7 +39,7 @@ def scrape_model_data(model, make, year):
     cleaned = name.replace(f"{year} ", "").replace(f"{make}", "").strip()
 
     #price is formatted as <div class="estimated-cost"> estimated cost $XX,XXX</div>
-    price = model.select_one('.estimated-cost')
+    rice = model.select_one('.estimated-cost')
     #remove "estimated cost: " and "$" from string
     if price:
         price = price.text.replace("estimated cost ", "").replace("$", "").strip()
