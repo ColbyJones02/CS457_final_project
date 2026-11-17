@@ -1,12 +1,15 @@
 import csv
 from os import name
+import re
 import sys
+from tkinter import ttk
 import requests
 import psycopg2
 import tkinter as tk
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
+#global variables for tracking each dictionary size when adding entries to the db
 vehicleSize=0
 manuSize=0
 modelSize=0
@@ -14,6 +17,7 @@ dimSize=0
 engineSize=0
 transmissionSize=0
 
+#initialize connection to postgresql database
 conn = psycopg2.connect(
     host="localhost",
     database="cars_db",
@@ -31,6 +35,7 @@ make_array = ['acura', 'alfa-romeo', 'am-general', 'aston-martin', 'audi', 'bent
              'plymouth', 'pontiac', 'porsche', 'ram', 'rivian','rolls-royce', 'saab', 'saleen', 'saturn', 'scion', 'smart', 
              'spyker', 'subaru', 'suzuki', 'tesla', 'toyota', 'volkswagen', 'volvo']
 
+#vehicle class to store scraped car data in a singular location
 class Vehicle:
     def __init__(self, make, model, price, year, length, width, height, cylinderCount, horsepower, isElectric, gearNum, manOrAuto):
         self.make = make
@@ -53,6 +58,7 @@ size_dict= {}
 engine_dict= {}
 transmission_dict= {}
 
+#start of scraping tool functionality.
 def scrape_model_data(model, make, year):
     global vehicleSize
     vehicleSize += 1
@@ -279,25 +285,153 @@ def save_to_db(scraped_vehicle):
         print(f"Saved data for {scraped_vehicle.year} {scraped_vehicle.make} {scraped_vehicle.model} to DB.")
     except psycopg2.Error as e:
         print(f"Error saving data to database: {e}")
-        #terminate program
+        conn.rollback()
         sys.exit(1)
     finally:
         if 'cursor' in locals():
             cursor.close()
+#end of scraping tool functionality.
 
-#program which scrapes data from carspecs.us
-#outline for a tool that will be implemented with a GUI and PostgreSQL database in the future
-#the data scraping is a one time process
-#the GUI will be used to query the database and display the results in a user-friendly manner
+def load_query_results():
+    global runningQuery
+    runningQuery= True
+    query= query_entry.get()
+    columns, rows= query_submit(query)
+    if columns:
+        populate_treeview(tree, columns, rows)
+    else:
+        tree.delete(*tree.get_children())
 
+runningQuery= False
+def query_submit(query_text):
+    #clear previous error message from GUI
+    for widget in root.pack_slaves():
+        if isinstance(widget, tk.Label) and "Invalid query word" in widget.cget("text"):
+            widget.destroy()
+            
+    global runningQuery
+    #array of valid psql query words for query_submit()
+    valid_query_words = ["SELECT", "FROM", "WHERE", "AND", "OR", "ORDER", "BY", "ASC", "DESC", 
+                         "JOIN", "ON", "GROUP", "HAVING", "NULL", "NOT", "IS","IN", "BETWEEN",
+                         "DISTINCT", "AS", "UNION", "ALL", "COUNT", "SUM", "TRUE", "FALSE"]
+    
+    valid_table_names = ["manufacturer", "model", "size", "engine", "transmission", "vehicle"]
+
+    valid_attrs = ["makeid", "mfname", "modelid", "modelname", "sizeid", "length", "width", "height",
+                   "engineid", "cylinderCount", "horsepower", "isElectric", "transmid", "gearNum", "manOrAuto",
+                   "vehicleid", "price", "year"]
+    
+    valid_op_tokens= r"\s+|(>=|<=|<>|!=|=|>|<|\*|\+|-|/|,|\(|\)|;)"
+
+    query_text= query_entry.get()
+    print(f"Query submitted: {query_text}")
+    query_entry.delete(0, tk.END)
+
+    query_tokens= [token for token in re.split(valid_op_tokens, query_text) if token]
+
+    if runningQuery:
+        #check if the query is valid and avoids use of modification keywords like ALTER or DELETE 
+        for query_word in query_tokens:
+            global startFlag
+            if (query_word not in valid_query_words and query_word not in valid_table_names and query_word not in valid_attrs 
+                and re.search(valid_op_tokens, query_word)== False and query_word.isnumeric()== False):
+                
+                print(f"Invalid query word: {query_word}")
+                #error message to user in GUI
+                error_label = tk.Label(root, text=f"Invalid query word: {query_word}", fg="red")
+                error_label.pack()
+                return [], []
+
+        #if query is valid, query db and display results in GUI
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query_text)
+
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            rows= cursor.fetchall()
+
+            return columns, rows
+
+        except psycopg2.Error as e:
+            print(f"Error executing query: {e}")
+            error_label = tk.Label(root, text=f"Error executing query: {e}", fg="red")
+            error_label.pack()
+            conn.rollback()
+            return [], []
+        finally:
+            if 'cursor' in locals():
+                cursor.close() 
+
+def populate_treeview(tree, columns, rows):
+    tree.delete(*tree.get_children())
+
+    col_ids= [str(i) for i in range(len(columns))]
+    tree["columns"]= col_ids
+
+    for col_id, column_text in zip(col_ids, columns):
+        tree.heading(col_id, text=column_text.replace("_", " ").title())
+        tree.column(col_id, width=100, anchor="center", stretch=True)
+
+    for row in rows:
+        cleaned_row= ["" if value is None else str(value) for value in row]
+        tree.insert("", "end", values=cleaned_row)
+
+def on_focus_in(event):
+    if query_entry.get() == "Type a query above to search the database...":
+        query_entry.delete(0, tk.END)
+        query_entry.config(style="normal.TEntry")
+
+def on_focus_out(event):
+    if query_entry.get() == "":
+        query_entry.insert(0, "Type a query above to search the database...")
+        query_entry.config(style="placeholder.TEntry")
+
+PLACEHOLDER= "Type a query above to search the database..."
 #gui implementation
 root = tk.Tk()
 root.title("Vehicle Database")
-# Add GUI elements here
 root.geometry("720x480")
+
 label = tk.Label(root, text="Vehicle Database", font=("Helvetica", 24))
 label.pack(pady=20)
 
-button = tk.Button(root, text="get data", command=on_button_click)
+button = tk.Button(root, text="Scraping tool (for carspecs.com)", command=on_button_click)
 button.pack(pady=10)
+
+top_frame= ttk.Frame(root, padding=10)
+top_frame.pack(fill="x")
+
+#entry widget for user to input query.
+query_entry= ttk.Entry(top_frame)
+query_entry.insert(0, PLACEHOLDER)
+query_entry.pack(side="left", fill= "x", expand= True, padx=(0,10))
+query_entry.bind("<FocusIn>", on_focus_in)
+query_entry.bind("<FocusOut>", on_focus_out)
+
+query_button = tk.Button(root, text="Submit Query", command=load_query_results)
+query_button.pack(side="right")
+
+#frame for generated table
+table_frame= ttk.Frame(root, padding= (10, 0, 10, 10))
+table_frame.pack(fill="both", expand=True)
+
+v_scrollbar= ttk.Scrollbar(table_frame, orient="vertical")
+h_scrollbar= ttk.Scrollbar(table_frame, orient="horizontal")
+
+#Treeview widget for displaying query results
+tree= ttk.Treeview(table_frame, show= "headings", yscrollcommand= v_scrollbar.set, xscrollcommand= h_scrollbar.set)
+
+v_scrollbar.config(command= tree.yview)
+h_scrollbar.config(command= tree.xview)
+
+tree.grid(row=0, column=0, sticky="nsew")
+v_scrollbar.grid(row=0, column=1, sticky="ns")
+h_scrollbar.grid(row=1, column=0, sticky="ew")
+
+table_frame.grid_rowconfigure(0, weight=1)
+table_frame.grid_columnconfigure(0, weight=1)
+
 root.mainloop()
+
+if conn:
+    conn.close()
