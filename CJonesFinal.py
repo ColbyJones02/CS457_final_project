@@ -70,21 +70,18 @@ def scrape_model_data(model, make, year):
     #edge case for "Am General", correction to "AM General"
     if make== 'Am General':
         make=make.replace('m', 'M')
-
     #model of car formatted as <h1><b>{year} {make} {model}</b></h1>
     name = model.select_one('h1 b').text.strip()
     #remove the year and make from the name string.
     cleaned = name.replace(f"{year} ", "").replace(f"{make}", "").strip()
-
     #engine
     if model.select_one('h2:-soup-contains("engine")'):
         cylinderCount = model.select_one('h4:-soup-contains("Cylinders")')
         horsepower = model.select_one('h4:-soup-contains("Horsepower")')
-        
         isElectric = model.select_one('h4:-soup-contains("Engine type")')
         cylinderCount = cylinderCount.find_next_sibling(string=True).strip() if cylinderCount else None
         horsepower = horsepower.find_next_sibling(string=True).strip() if horsepower else None
-        horsepower = horsepower.replace(" hp", "").strip() if horsepower else None
+        horsepower = horsepower.replace(" hp", "").replace(",", "").strip() if horsepower else None
         isElectric = isElectric.find_next_sibling(string=True).strip() if isElectric else None
         if isElectric in ("electric", "hybrid"):
             isElectric = True
@@ -108,49 +105,43 @@ def scrape_model_data(model, make, year):
         length = length.replace(" in.", "") if length else None
         width = width.replace(" in.", "") if width else None
         height = height.replace(" in.", "") if height else None
-        
     else:
         length = None
         width = None
         height = None
-
-    #transmission data is formatted as <h4>Transmission</h4>\n Transmission, {gearNum}-speed {manOrAuto(boolean)}, Unwanted text<br />
-    transmission = model.select_one('h4:-soup-contains("Transmission")')
-    gearNum= None
-
-    dctKeywordCount= 0
-    splitTrasmCount = 0
-    if transmission:
-        transmission = transmission.find_next_sibling(string=True).strip()
-        #parsing is not consistent between pages, scan through the string to extract the relevant information (i.e "5", "Automatic")
-        transmission = transmission.lower()
-        for word in transmission.replace("-speed", "").replace("-spd", "").replace("(", "").replace(")", "").split():
-            print(f"Processing word: {word}")
-
-            if word=="dual" or word=="clutch":
-                dctKeywordCount += 1
-
-            if word=="front" or word=="rear":
-                splitTrasmCount += 1
-
-            if word.isdigit():
-                gearNum = int(word)
-
-                #true= auto, false= manual
-            elif (word == "automatic" or word == "auto/man" or word== "auto" or word == "dual-clutch" or word == "dct"
-                  or word== "auto-shift" or word== "sportshift" or word== "tronic" or word== "tiptronic"or word=="stronic"
-                  or word=="quickshift" or word=="steptronic" or dctKeywordCount == 2 or splitTrasmCount == 2):
-                manOrAuto = True
-                dctKeywordCount = 0
-                splitTrasmCount = 0
-                
-            elif word == "manual" or word == "man":
-                manOrAuto = False
+    #error handling for transmission data. skip a vehicle if transmission data is formatted incorrectly/ missing.
+    try:
+        transmission = model.select_one('h4:-soup-contains("Transmission")')
+        gearNum= None
+        dctKeywordCount= 0
+        splitTrasmCount = 0
+        if transmission:
+            transmission = transmission.find_next_sibling(string=True).strip()
+            #parsing is not consistent between pages, scan through the string to extract the relevant information (i.e "5", "Automatic")
+            transmission = transmission.lower()
+            for word in transmission.replace("-speed", "").replace("-spd", "").replace("(", "").replace(")", "").split():
+                if word=="dual" or word=="clutch":
+                    dctKeywordCount += 1
+                if word=="front" or word=="rear":
+                    splitTrasmCount += 1
+                if word.isdigit():
+                    gearNum = int(word)
+                    #true= auto, false= manual
+                elif (word == "automatic" or word == "auto/man" or word== "auto" or word == "dual-clutch" or word == "dct"
+                      or word== "auto-shift" or word== "sportshift" or word== "tronic" or word== "tiptronic"or word=="stronic"
+                      or word=="quickshift" or word=="steptronic" or dctKeywordCount == 2 or splitTrasmCount == 2):
+                    manOrAuto = True
+                    dctKeywordCount = 0
+                    splitTrasmCount = 0
+                elif word == "manual" or word == "man":
+                    manOrAuto = False
+    except Exception as e:
+        print(f"Error parsing transmission data: {e}")
+        return None
     else:
         gearNum = None
         manOrAuto = False
 
-    #price is formatted as <div class="estimated-cost"> estimated cost $XX,XXX</div>
     price = model.select_one('.estimated-cost')
     #remove "estimated cost: " and "$" from string
     if price:
@@ -200,6 +191,9 @@ def on_button_click():
                 model_soup = BeautifulSoup(model_response.text, 'html.parser')
                 #scrape the data for each model and save it to a csv file
                 scraped_vehicle= scrape_model_data(model_soup, make, str(year))
+                if scraped_vehicle is None:
+                    print(f"Skipping vehicle: {model_url}")
+                    continue
                 save_to_db(scraped_vehicle)
                 print(f"Finished processing model: {model_url}")
 
